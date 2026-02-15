@@ -108,12 +108,18 @@ class KickBot {
       try {
         const message = JSON.parse(data);
         
+        // DEBUG: Log all events to see what we're getting
+        if (message.event && !message.event.includes('pusher:ping')) {
+          console.log('📨 Event received:', message.event);
+        }
+        
         // Handle different message types
         if (message.event === 'pusher:connection_established') {
           console.log('✓ Pusher connection established');
         } else if (message.event === 'pusher_internal:subscription_succeeded') {
           console.log('✓ Successfully subscribed to chat');
         } else if (message.event === 'App\\Events\\ChatMessageEvent') {
+          console.log('💬 Chat message detected!');
           await this.handleChatMessage(message.data);
         }
       } catch (error) {
