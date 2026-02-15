@@ -1,0 +1,20 @@
+{
+  "name": "kick-slot-tracker-bot",
+  "version": "1.0.0",
+  "description": "Kick chat bot that monitors for !call commands and sends to R2K2.gg API",
+  "main": "kick-bot.js",
+  "scripts": {
+    "start": "node kick-bot.js",
+    "dev": "node kick-bot.js"
+  },
+  "keywords": ["kick", "bot", "chat", "slots"],
+  "author": "R2K2",
+  "license": "MIT",
+  "dependencies": {
+    "axios": "^1.6.0",
+    "ws": "^8.14.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
