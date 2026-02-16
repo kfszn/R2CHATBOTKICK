@@ -75,6 +75,9 @@ class KickBot {
       console.log(`✓ Channel ID: ${this.channelId}`);
       console.log(`✓ Chatroom ID: ${this.chatRoomId}`);
       
+      // Get Pusher auth token
+      await this.getPusherAuth();
+      
       return true;
     } catch (error) {
       console.error('Failed to get channel info:', error.message);
@@ -82,26 +85,67 @@ class KickBot {
     }
   }
 
+  async getPusherAuth() {
+    try {
+      console.log('Getting Pusher auth token...');
+      
+      const socketId = 'socket-' + Math.random().toString(36).substring(7);
+      const channelName = `chatrooms.${this.chatRoomId}.v2`;
+      
+      const response = await axios.post(
+        'https://kick.com/api/v1/broadcasting/auth',
+        {
+          socket_id: socketId,
+          channel_name: channelName
+        },
+        {
+          headers: {
+            'Content-Type': 'application/json'
+          }
+        }
+      );
+
+      this.pusherAuth = response.data.auth;
+      this.socketId = socketId;
+      console.log('✓ Got Pusher auth token');
+      
+      return true;
+    } catch (error) {
+      console.error('Failed to get Pusher auth:', error.message);
+      // Continue without auth - some channels allow public access
+      this.pusherAuth = '';
+      this.socketId = 'socket-' + Math.random().toString(36).substring(7);
+      return true;
+    }
+  }
+
   connectToChat() {
     console.log('Connecting to Kick chat...');
     
-    this.ws = new WebSocket('wss://ws-us2.pusher.com/app/eb1d5f283081a78b932c?protocol=7&client=js&version=7.4.0&flash=false');
+    const wsUrl = `wss://ws-us2.pusher.com/app/eb1d5f283081a78b932c?protocol=7&client=js&version=7.4.0&flash=false`;
+    this.ws = new WebSocket(wsUrl);
 
     this.ws.on('open', () => {
       console.log('✓ WebSocket connected');
       
-      // Subscribe to chat channel
-      const subscribeMessage = {
-        event: 'pusher:subscribe',
-        data: {
-          auth: '',
-          channel: `chatrooms.${this.chatRoomId}.v2`
+      // Wait for connection_established to get the real socket_id
+      setTimeout(() => {
+        // Subscribe to chat channel with auth
+        const subscribeMessage = {
+          event: 'pusher:subscribe',
+          data: {
+            channel: `chatrooms.${this.chatRoomId}.v2`
+          }
+        };
+        
+        // Add auth if we have it
+        if (this.pusherAuth) {
+          subscribeMessage.data.auth = this.pusherAuth;
         }
-      };
-      
-      this.ws.send(JSON.stringify(subscribeMessage));
-      console.log(`✓ Subscribed to chatrooms.${this.chatRoomId}.v2`);
-      console.log('🤖 Bot is now listening for !call commands...\n');
+        
+        this.ws.send(JSON.stringify(subscribeMessage));
+        console.log(`✓ Subscribing to chatrooms.${this.chatRoomId}.v2`);
+      }, 1000);
     });
 
     this.ws.on('message', async (data) => {
@@ -116,8 +160,12 @@ class KickBot {
         // Handle different message types
         if (message.event === 'pusher:connection_established') {
           console.log('✓ Pusher connection established');
+          const data = JSON.parse(message.data);
+          this.realSocketId = data.socket_id;
+          console.log('✓ Socket ID:', this.realSocketId);
         } else if (message.event === 'pusher_internal:subscription_succeeded') {
           console.log('✓ Successfully subscribed to chat');
+          console.log('🤖 Bot is now listening for !call commands...\n');
         } else if (message.event === 'App\\Events\\ChatMessageEvent') {
           console.log('💬 Chat message detected!');
           await this.handleChatMessage(message.data);
