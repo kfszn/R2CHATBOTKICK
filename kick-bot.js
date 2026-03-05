@@ -1,279 +1,169 @@
-const axios = require('axios');
 const WebSocket = require('ws');
+const fetch = require('node-fetch');
+require('dotenv').config();
 
-// Configuration
-const CONFIG = {
-  kickUsername: process.env.KICK_USERNAME || 'CodeR2K2',
-  kickPassword: process.env.KICK_PASSWORD,
-  channelName: process.env.KICK_CHANNEL || 'R2ktwo',
-  apiEndpoint: process.env.API_ENDPOINT || 'https://r2k2.gg/api/slot-calls'
-};
+// Config
+const KICK_CHANNEL = 'r2ktwo';
+const BOT_USERNAME = 'CodeR2K2';
+const R2K2_API_URL = process.env.R2K2_API_URL; // e.g. https://r2k2.gg
+const BOT_OAUTH_TOKEN = process.env.KICK_OAUTH_TOKEN;
+const KICK_CHATROOMID = process.env.KICK_CHATROOM_ID; // numeric chatroom ID
 
-class KickBot {
-  constructor() {
-    this.ws = null;
-    this.channelId = null;
-    this.accessToken = null;
-    this.chatRoomId = null;
-  }
+let ws;
+let reconnectDelay = 5000;
 
-  async authenticate() {
-    try {
-      console.log('Authenticating with Kick...');
-      
-      // Get CSRF token first
-      const csrfResponse = await axios.get('https://kick.com/kick-token-provider');
-      const xsrfToken = csrfResponse.headers['set-cookie']
-        ?.find(cookie => cookie.startsWith('XSRF-TOKEN'))
-        ?.split(';')[0]
-        ?.split('=')[1];
+function log(msg) {
+  console.log(`[${new Date().toISOString()}] ${msg}`);
+}
 
-      if (!xsrfToken) {
-        throw new Error('Failed to get XSRF token');
-      }
-
-      // Login
-      const loginResponse = await axios.post(
-        'https://kick.com/api/v2/authentication/login',
-        {
-          email: CONFIG.kickUsername,
-          password: CONFIG.kickPassword
-        },
-        {
-          headers: {
-            'X-XSRF-TOKEN': decodeURIComponent(xsrfToken),
-            'Content-Type': 'application/json'
-          },
-          withCredentials: true
-        }
-      );
-
-      this.accessToken = loginResponse.data.token;
-      console.log('✓ Authenticated successfully');
-      
-      return true;
-    } catch (error) {
-      console.error('Authentication failed:', error.message);
-      if (error.response) {
-        console.error('Response data:', error.response.data);
-      }
-      return false;
+async function sendChatMessage(message) {
+  try {
+    const res = await fetch(`https://kick.com/api/v2/messages/send/${KICK_CHATROOMID}`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${BOT_OAUTH_TOKEN}`,
+      },
+      body: JSON.stringify({ content: message, type: 'message' }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      log(`[chat] Failed to send message: ${res.status} ${err}`);
     }
+  } catch (error) {
+    log(`[chat] Error sending message: ${error.message}`);
   }
+}
 
-  async getChannelInfo() {
-    try {
-      console.log(`Getting channel info for ${CONFIG.channelName}...`);
-      
-      const response = await axios.get(
-        `https://kick.com/api/v2/channels/${CONFIG.channelName}`
-      );
+async function handleVerify(kickUsername, accountId) {
+  log(`[verify] ${kickUsername} attempting to verify with ${accountId}`);
 
-      this.channelId = response.data.id;
-      this.chatRoomId = response.data.chatroom.id;
-      
-      console.log(`✓ Channel ID: ${this.channelId}`);
-      console.log(`✓ Chatroom ID: ${this.chatRoomId}`);
-      
-      // Get Pusher auth token
-      await this.getPusherAuth();
-      
-      return true;
-    } catch (error) {
-      console.error('Failed to get channel info:', error.message);
-      return false;
-    }
-  }
-
-  async getPusherAuth() {
-    try {
-      console.log('Getting Pusher auth token...');
-      
-      const socketId = 'socket-' + Math.random().toString(36).substring(7);
-      const channelName = `chatrooms.${this.chatRoomId}.v2`;
-      
-      const response = await axios.post(
-        'https://kick.com/api/v1/broadcasting/auth',
-        {
-          socket_id: socketId,
-          channel_name: channelName
-        },
-        {
-          headers: {
-            'Content-Type': 'application/json'
-          }
-        }
-      );
-
-      this.pusherAuth = response.data.auth;
-      this.socketId = socketId;
-      console.log('✓ Got Pusher auth token');
-      
-      return true;
-    } catch (error) {
-      console.error('Failed to get Pusher auth:', error.message);
-      // Continue without auth - some channels allow public access
-      this.pusherAuth = '';
-      this.socketId = 'socket-' + Math.random().toString(36).substring(7);
-      return true;
-    }
-  }
-
-  connectToChat() {
-    console.log('Connecting to Kick chat...');
-    
-    const wsUrl = `wss://ws-us2.pusher.com/app/eb1d5f283081a78b932c?protocol=7&client=js&version=7.4.0&flash=false`;
-    this.ws = new WebSocket(wsUrl);
-
-    this.ws.on('open', () => {
-      console.log('✓ WebSocket connected');
-      
-      // Wait for connection_established to get the real socket_id
-      setTimeout(() => {
-        // Subscribe to chat channel with auth
-        const subscribeMessage = {
-          event: 'pusher:subscribe',
-          data: {
-            channel: `chatrooms.${this.chatRoomId}.v2`
-          }
-        };
-        
-        // Add auth if we have it
-        if (this.pusherAuth) {
-          subscribeMessage.data.auth = this.pusherAuth;
-        }
-        
-        this.ws.send(JSON.stringify(subscribeMessage));
-        console.log(`✓ Subscribing to chatrooms.${this.chatRoomId}.v2`);
-      }, 1000);
+  try {
+    const res = await fetch(`${R2K2_API_URL}/api/kick/verify`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ account_id: accountId, kick_username: kickUsername }),
     });
 
-    this.ws.on('message', async (data) => {
-      try {
-        const message = JSON.parse(data);
-        
-        // DEBUG: Log all events to see what we're getting
-        if (message.event && !message.event.includes('pusher:ping')) {
-          console.log('📨 Event received:', message.event);
-        }
-        
-        // Handle different message types
-        if (message.event === 'pusher:connection_established') {
-          console.log('✓ Pusher connection established');
-          const data = JSON.parse(message.data);
-          this.realSocketId = data.socket_id;
-          console.log('✓ Socket ID:', this.realSocketId);
-        } else if (message.event === 'pusher_internal:subscription_succeeded') {
-          console.log('✓ Successfully subscribed to chat');
-          console.log('🤖 Bot is now listening for !call commands...\n');
-        } else if (message.event === 'App\\Events\\ChatMessageEvent') {
-          console.log('💬 Chat message detected!');
-          await this.handleChatMessage(message.data);
-        }
-      } catch (error) {
-        console.error('Error processing message:', error.message);
+    if (res.ok) {
+      log(`[verify] ✅ ${kickUsername} linked to ${accountId}`);
+      await sendChatMessage(`@${kickUsername} ✅ Your Kick account has been linked to R2K2.gg account ${accountId}! You'll now earn points while watching. 🎉`);
+    } else if (res.status === 404) {
+      log(`[verify] ❌ Account not found: ${accountId}`);
+      await sendChatMessage(`@${kickUsername} ❌ Account ID ${accountId} not found. Make sure you copied it correctly from your R2K2.gg profile.`);
+    } else if (res.status === 409) {
+      const data = await res.json().catch(() => ({}));
+      if (data.error === 'kick_already_linked') {
+        log(`[verify] ❌ Kick username already linked: ${kickUsername}`);
+        await sendChatMessage(`@${kickUsername} ❌ Your Kick account is already linked to an R2K2.gg account.`);
+      } else {
+        log(`[verify] ❌ Account ID already linked: ${accountId}`);
+        await sendChatMessage(`@${kickUsername} ❌ That account ID is already linked to a different Kick account.`);
       }
-    });
+    } else {
+      log(`[verify] ❌ Unexpected error: ${res.status}`);
+      await sendChatMessage(`@${kickUsername} ❌ Something went wrong. Please try again later.`);
+    }
+  } catch (error) {
+    log(`[verify] Error calling API: ${error.message}`);
+    await sendChatMessage(`@${kickUsername} ❌ Something went wrong. Please try again later.`);
+  }
+}
 
-    this.ws.on('error', (error) => {
-      console.error('WebSocket error:', error.message);
-    });
+function handleMessage(data) {
+  try {
+    const parsed = JSON.parse(data);
 
-    this.ws.on('close', () => {
-      console.log('WebSocket closed. Reconnecting in 5 seconds...');
-      setTimeout(() => this.connectToChat(), 5000);
-    });
+    // Only handle chat messages
+    if (parsed.event !== 'App\\Events\\ChatMessageEvent') return;
 
-    // Send ping every 30 seconds to keep connection alive
+    const payload = JSON.parse(parsed.data);
+    const username = payload?.sender?.username;
+    const content = payload?.content?.trim();
+
+    if (!username || !content) return;
+
+    // Ignore messages from the bot itself
+    if (username.toLowerCase() === BOT_USERNAME.toLowerCase()) return;
+
+    log(`[chat] ${username}: ${content}`);
+
+    // Handle !verify command
+    const verifyMatch = content.match(/^!verify\s+(R2K2-[A-Z0-9]{5})$/i);
+    if (verifyMatch) {
+      const accountId = verifyMatch[1].toUpperCase();
+      handleVerify(username, accountId);
+      return;
+    }
+
+    // Handle !points command (placeholder for later)
+    if (content.toLowerCase() === '!points') {
+      sendChatMessage(`@${username} Points system coming soon! Link your account with !verify R2K2-XXXXX`);
+      return;
+    }
+
+    // Handle !help command
+    if (content.toLowerCase() === '!help' || content.toLowerCase() === '!r2k2') {
+      sendChatMessage(`@${username} 👋 Create an account at r2k2.gg, get your account ID, then type !verify R2K2-XXXXX here to link and earn points!`);
+      return;
+    }
+
+  } catch (error) {
+    log(`[ws] Error parsing message: ${error.message}`);
+  }
+}
+
+function connect() {
+  log(`[ws] Connecting to Kick chat for channel: ${KICK_CHANNEL}`);
+
+  ws = new WebSocket('wss://ws-us2.pusher.com/app/eb1d5f283081a78b932c?protocol=7&client=js&version=7.6.0&flash=false');
+
+  ws.on('open', () => {
+    log('[ws] Connected to Pusher');
+    reconnectDelay = 5000;
+
+    // Subscribe to channel chat
+    ws.send(JSON.stringify({
+      event: 'pusher:subscribe',
+      data: { auth: '', channel: `chatrooms.${KICK_CHATROOMID}.v2` }
+    }));
+
+    log(`[ws] Subscribed to chatroom ${KICK_CHATROOMID}`);
+
+    // Ping every 30s to keep connection alive
     setInterval(() => {
-      if (this.ws && this.ws.readyState === WebSocket.OPEN) {
-        this.ws.send(JSON.stringify({ event: 'pusher:ping', data: {} }));
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ event: 'pusher:ping', data: {} }));
       }
     }, 30000);
-  }
+  });
 
-  async handleChatMessage(data) {
-    try {
-      const messageData = typeof data === 'string' ? JSON.parse(data) : data;
-      const content = messageData.content?.trim();
-      const username = messageData.sender?.username;
+  ws.on('message', (data) => {
+    const str = data.toString();
 
-      if (!content || !username) return;
+    // Respond to pong
+    if (str.includes('pusher:pong')) return;
 
-      // Check if message starts with !call
-      if (content.toLowerCase().startsWith('!call ')) {
-        const slotName = content.substring(6).trim(); // Remove "!call "
-        
-        if (!slotName) {
-          console.log(`⚠️  ${username} used !call but didn't specify a slot name`);
-          return;
-        }
+    handleMessage(str);
+  });
 
-        console.log(`📢 ${username} called: ${slotName}`);
-        
-        // Send to API
-        await this.sendToAPI(username, slotName);
-      }
-    } catch (error) {
-      console.error('Error handling chat message:', error.message);
-    }
-  }
+  ws.on('close', () => {
+    log(`[ws] Connection closed. Reconnecting in ${reconnectDelay / 1000}s...`);
+    setTimeout(connect, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 60000); // exponential backoff, max 60s
+  });
 
-  async sendToAPI(username, slotName) {
-    try {
-      const payload = {
-        username: username,
-        slotName: slotName,
-        type: 'call',
-        timestamp: new Date().toISOString()
-      };
-
-      const response = await axios.post(CONFIG.apiEndpoint, payload, {
-        headers: {
-          'Content-Type': 'application/json'
-        }
-      });
-
-      console.log(`✓ Sent to API: ${username} | ${slotName}`);
-      
-    } catch (error) {
-      console.error('Failed to send to API:', error.message);
-      if (error.response) {
-        console.error('API Response:', error.response.data);
-      }
-    }
-  }
-
-  async start() {
-    console.log('=== Kick Bot Starting ===\n');
-    
-    // Get channel info (no auth needed for public channels)
-    const channelSuccess = await this.getChannelInfo();
-    if (!channelSuccess) {
-      console.error('Failed to get channel info. Exiting.');
-      process.exit(1);
-    }
-
-    // Connect to chat
-    this.connectToChat();
-  }
+  ws.on('error', (error) => {
+    log(`[ws] Error: ${error.message}`);
+  });
 }
 
-// Validate required environment variables
-if (!CONFIG.apiEndpoint) {
-  console.error('ERROR: API_ENDPOINT environment variable is required');
-  process.exit(1);
-}
+// Start
+log(`[boot] R2K2 Kick Bot starting...`);
+log(`[boot] Channel: ${KICK_CHANNEL}`);
+log(`[boot] Bot: ${BOT_USERNAME}`);
+log(`[boot] API URL: ${R2K2_API_URL}`);
+log(`[boot] Chatroom ID: ${KICK_CHATROOMID}`);
+log(`[boot] OAuth token set: ${!!BOT_OAUTH_TOKEN}`);
 
-// Start the bot
-const bot = new KickBot();
-bot.start();
-
-// Handle graceful shutdown
-process.on('SIGINT', () => {
-  console.log('\n\nShutting down bot...');
-  if (bot.ws) {
-    bot.ws.close();
-  }
-  process.exit(0);
-});
+connect();
