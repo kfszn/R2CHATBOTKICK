@@ -36,8 +36,8 @@ async function loadSettings() {
     const res = await fetch(`${R2K2_API_URL}/api/settings`);
     if (res.ok) {
       const data = await res.json();
-      POINTS_PER_MESSAGE = data.points_per_message || 1;
-      POINTS_PER_10MIN = data.points_per_10min_watch || 1;
+      POINTS_PER_MESSAGE = data.pointsPerMessage || data.points_per_message || 1;
+      POINTS_PER_10MIN = data.pointsPer10Min || data.points_per_10min_watch || 1;
       log(`[settings] Loaded — msg: ${POINTS_PER_MESSAGE}pt, 10min: ${POINTS_PER_10MIN}pt`);
     }
   } catch (error) {
