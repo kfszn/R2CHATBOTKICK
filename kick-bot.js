@@ -183,7 +183,7 @@ async function handleChatPoints(kickUsername) {
   }
 }
 
-function handleMessage(data) {
+async function handleMessage(data) {
   try {
     const parsed = JSON.parse(data);
     if (parsed.event !== 'App\\Events\\ChatMessageEvent') return;
