@@ -175,10 +175,10 @@ async function handleChatPoints(kickUsername) {
     sessionChatters[kickUsername] = { messageCount: 0 };
   }
   sessionChatters[kickUsername].messageCount++;
-  log(`[points] ${kickUsername} msg #${sessionChatters[kickUsername].messageCount}, isLive: ${isLive}`);
+  log(`[points] ${kickUsername} msg #${sessionChatters[kickUsername].messageCount}`);
 
-  // Award points per message only when stream is live
-  if (isLive && POINTS_PER_MESSAGE > 0) {
+  // Award points per message always (no live requirement)
+  if (POINTS_PER_MESSAGE > 0) {
     await awardPoints(kickUsername, POINTS_PER_MESSAGE, 'chat_message', 'Chat message');
   }
 }
@@ -290,8 +290,10 @@ async function boot() {
   log(`[boot] OAuth token set: ${!!BOT_OAUTH_TOKEN}`);
 
   await loadSettings();
-  await checkStreamLive();
-  streamCheckInterval = setInterval(checkStreamLive, 2 * 60 * 1000);
+  log(`[boot] Points per message: ${POINTS_PER_MESSAGE}, Points per 10min: ${POINTS_PER_10MIN}`);
+
+  // Start watch time interval (always running)
+  onStreamStart();
 
   connect();
 }
