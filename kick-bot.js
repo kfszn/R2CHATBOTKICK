@@ -8,6 +8,7 @@ const BOT_USERNAME = 'CodeR2K2';
 const R2K2_API_URL = process.env.R2K2_API_URL;
 const BOT_OAUTH_TOKEN = process.env.KICK_OAUTH_TOKEN;
 const KICK_CHATROOMID = process.env.KICK_CHATROOM_ID;
+const BOT_SECRET = process.env.BOT_SECRET || '';
 
 let ws;
 let reconnectDelay = 5000;
@@ -22,7 +23,6 @@ let streamCheckInterval = null;
 let watchTimeInterval = null;
 
 // Track chatters this stream session
-// { kick_username: { messageCount: 0 } }
 const sessionChatters = {};
 
 function log(msg) {
@@ -82,39 +82,11 @@ async function sendChatMessage(message) {
   }
 }
 
-async function checkStreamLive() {
-  try {
-    const res = await fetch(`https://kick.com/api/v2/channels/${KICK_CHANNEL}`);
-    log(`[stream] Check status: ${res.status}`);
-    if (res.ok) {
-      const data = await res.json();
-      const wasLive = isLive;
-      isLive = data.livestream !== null;
-      log(`[stream] isLive: ${isLive}`);
-      if (!wasLive && isLive) {
-        log(`[stream] Stream went LIVE — starting new session`);
-        onStreamStart();
-      } else if (wasLive && !isLive) {
-        log(`[stream] Stream went OFFLINE — ending session`);
-        onStreamEnd();
-      }
-    } else {
-      log(`[stream] Bad status ${res.status} — defaulting isLive to true`);
-      if (!isLive) { isLive = true; onStreamStart(); }
-    }
-  } catch (error) {
-    log(`[stream] Error: ${error.message} — defaulting isLive to true`);
-    if (!isLive) { isLive = true; onStreamStart(); }
-  }
-}
-
 // ─── STREAM SESSION ──────────────────────────────────────────────────────────
 
 function onStreamStart() {
-  // Clear previous session chatters
   Object.keys(sessionChatters).forEach(k => delete sessionChatters[k]);
 
-  // Award watch time points every 10 minutes to qualifying chatters (3+ messages)
   watchTimeInterval = setInterval(() => {
     const qualifying = Object.entries(sessionChatters)
       .filter(([_, data]) => data.messageCount >= 3)
@@ -140,14 +112,12 @@ function onStreamEnd() {
 
 async function handleVerify(kickUsername, accountId) {
   log(`[verify] ${kickUsername} attempting to verify with ${accountId}`);
-
   try {
     const res = await fetch(`${R2K2_API_URL}/api/kick/verify`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ account_id: accountId, kick_username: kickUsername }),
     });
-
     if (res.ok) {
       log(`[verify] ✅ ${kickUsername} linked to ${accountId}`);
       await sendChatMessage(`@${kickUsername} ✅ Your Kick account has been linked to R2K2.gg! You'll now earn points while watching. 🎉`);
@@ -170,16 +140,58 @@ async function handleVerify(kickUsername, accountId) {
 }
 
 async function handleChatPoints(kickUsername) {
-  // Track chatter in session
   if (!sessionChatters[kickUsername]) {
     sessionChatters[kickUsername] = { messageCount: 0 };
   }
   sessionChatters[kickUsername].messageCount++;
   log(`[points] ${kickUsername} msg #${sessionChatters[kickUsername].messageCount}`);
 
-  // Award points per message always (no live requirement)
   if (POINTS_PER_MESSAGE > 0) {
     await awardPoints(kickUsername, POINTS_PER_MESSAGE, 'chat_message', 'Chat message');
+  }
+}
+
+async function handleEntry(kickUsername, acebetUsername) {
+  log(`[entry] ${kickUsername} entering tournament as ${acebetUsername}`);
+  try {
+    const res = await fetch(`${R2K2_API_URL}/api/bot/join`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kickUsername,
+        acebetUsername,
+        botSecret: BOT_SECRET
+      }),
+    });
+    const data = await res.json();
+    const msg = data.message || (res.ok ? '✅ You have been entered into the tournament!' : '❌ Something went wrong. Try again later.');
+    await sendChatMessage(`@${kickUsername} ${msg}`);
+    log(`[entry] Response for ${kickUsername}: ${msg}`);
+  } catch (error) {
+    log(`[entry] Error for ${kickUsername}: ${error.message}`);
+    await sendChatMessage(`@${kickUsername} ❌ Something went wrong. Try again later.`);
+  }
+}
+
+async function handleSlotRequest(kickUsername, slotName) {
+  log(`[request] ${kickUsername} requesting slot: ${slotName}`);
+  try {
+    const res = await fetch(`${R2K2_API_URL}/api/bot/slot-call`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        kickUsername,
+        slotName,
+        botSecret: BOT_SECRET
+      }),
+    });
+    const data = await res.json();
+    const msg = data.message || (res.ok ? '✅ Your slot call has been added!' : '❌ Something went wrong. Try again later.');
+    await sendChatMessage(`@${kickUsername} ${msg}`);
+    log(`[request] Response for ${kickUsername}: ${msg}`);
+  } catch (error) {
+    log(`[request] Error for ${kickUsername}: ${error.message}`);
+    await sendChatMessage(`@${kickUsername} ❌ Something went wrong. Try again later.`);
   }
 }
 
@@ -226,6 +238,20 @@ async function handleMessage(data) {
     // !help / !r2k2 command
     if (content.toLowerCase() === '!help' || content.toLowerCase() === '!r2k2') {
       sendChatMessage(`@${username} 👋 Create an account at www.r2k2.gg, get your account ID, then type !verify R2K2-XXXXX here to link and start earning points!`);
+      return;
+    }
+
+    // !entry [acebet_username] command — tournament entry
+    const entryMatch = content.match(/^!entry\s+(\S+)$/i);
+    if (entryMatch) {
+      handleEntry(username, entryMatch[1]);
+      return;
+    }
+
+    // !request [slot name] command — slot call
+    const requestMatch = content.match(/^!request\s+(.+)$/i);
+    if (requestMatch) {
+      handleSlotRequest(username, requestMatch[1].trim());
       return;
     }
 
@@ -288,13 +314,12 @@ async function boot() {
   log(`[boot] API URL: ${R2K2_API_URL}`);
   log(`[boot] Chatroom ID: ${KICK_CHATROOMID}`);
   log(`[boot] OAuth token set: ${!!BOT_OAUTH_TOKEN}`);
+  log(`[boot] Bot secret set: ${!!BOT_SECRET}`);
 
   await loadSettings();
   log(`[boot] Points per message: ${POINTS_PER_MESSAGE}, Points per 10min: ${POINTS_PER_10MIN}`);
 
-  // Start watch time interval (always running)
   onStreamStart();
-
   connect();
 }
 
