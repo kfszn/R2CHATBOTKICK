@@ -6,7 +6,8 @@ require('dotenv').config();
 const KICK_CHANNEL = 'r2ktwo';
 const BOT_USERNAME = 'CodeR2K2';
 const R2K2_API_URL = process.env.R2K2_API_URL;
-const BOT_OAUTH_TOKEN = process.env.KICK_OAUTH_TOKEN;
+let KICK_ACCESS_TOKEN = process.env.KICK_ACCESS_TOKEN;
+let KICK_REFRESH_TOKEN = process.env.KICK_REFRESH_TOKEN;
 const KICK_CHATROOMID = process.env.KICK_CHATROOM_ID;
 const BOT_SECRET = process.env.BOT_SECRET || '';
 
@@ -63,17 +64,66 @@ async function awardPoints(kickUsername, points, type, description) {
   }
 }
 
+async function refreshAccessToken() {
+  try {
+    const res = await fetch('https://id.kick.com/oauth/token', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: new URLSearchParams({
+        grant_type: 'refresh_token',
+        client_id: process.env.KICK_CLIENT_ID,
+        client_secret: process.env.KICK_CLIENT_SECRET,
+        refresh_token: KICK_REFRESH_TOKEN
+      })
+    });
+    if (res.ok) {
+      const data = await res.json();
+      KICK_ACCESS_TOKEN = data.access_token;
+      KICK_REFRESH_TOKEN = data.refresh_token;
+      log(`[auth] Token refreshed successfully`);
+    } else {
+      log(`[auth] Failed to refresh token: ${res.status}`);
+    }
+  } catch (error) {
+    log(`[auth] Error refreshing token: ${error.message}`);
+  }
+}
+
 async function sendChatMessage(message) {
   try {
-    const res = await fetch(`https://kick.com/api/v2/messages/send/${KICK_CHATROOMID}`, {
+    const res = await fetch('https://api.kick.com/public/v1/chat', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'Authorization': `Bearer ${BOT_OAUTH_TOKEN}`,
+        'Authorization': `Bearer ${KICK_ACCESS_TOKEN}`,
       },
-      body: JSON.stringify({ content: message, type: 'message' }),
+      body: JSON.stringify({
+        broadcaster_user_id: parseInt(KICK_CHATROOMID),
+        content: message,
+        type: 'bot'
+      }),
     });
-    if (!res.ok) {
+    if (res.status === 401) {
+      log(`[chat] Token expired, refreshing...`);
+      await refreshAccessToken();
+      // Retry once after refresh
+      const retry = await fetch('https://api.kick.com/public/v1/chat', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${KICK_ACCESS_TOKEN}`,
+        },
+        body: JSON.stringify({
+          broadcaster_user_id: parseInt(KICK_CHATROOMID),
+          content: message,
+          type: 'bot'
+        }),
+      });
+      if (!retry.ok) {
+        const err = await retry.text();
+        log(`[chat] Failed to send message after refresh: ${retry.status} ${err}`);
+      }
+    } else if (!res.ok) {
       const err = await res.text();
       log(`[chat] Failed to send message: ${res.status} ${err}`);
     }
