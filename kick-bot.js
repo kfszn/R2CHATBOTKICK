@@ -363,7 +363,7 @@ async function boot() {
   log(`[boot] Bot: ${BOT_USERNAME}`);
   log(`[boot] API URL: ${R2K2_API_URL}`);
   log(`[boot] Chatroom ID: ${KICK_CHATROOMID}`);
-  log(`[boot] OAuth token set: ${!!BOT_OAUTH_TOKEN}`);
+  log(`[boot] Access token set: ${!!KICK_ACCESS_TOKEN}`);
   log(`[boot] Bot secret set: ${!!BOT_SECRET}`);
 
   await loadSettings();
