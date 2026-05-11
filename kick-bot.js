@@ -98,7 +98,7 @@ async function sendChatMessage(message) {
         'Authorization': `Bearer ${KICK_ACCESS_TOKEN}`,
       },
       body: JSON.stringify({
-        broadcaster_user_id: parseInt(KICK_CHATROOMID),
+        broadcaster_user_id: 1267794,
         content: message,
         type: 'bot'
       }),
@@ -114,7 +114,7 @@ async function sendChatMessage(message) {
           'Authorization': `Bearer ${KICK_ACCESS_TOKEN}`,
         },
         body: JSON.stringify({
-          broadcaster_user_id: parseInt(KICK_CHATROOMID),
+          broadcaster_user_id: 1267794,
           content: message,
           type: 'bot'
         }),
