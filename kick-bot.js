@@ -67,20 +67,50 @@ async function refreshAccessToken() {
 
 // ─── STREAM LIVE CHECK ───────────────────────────────────────────────────────
 
+async function updateStreamStatus(live) {
+  try {
+    const res = await fetch(`${R2K2_API_URL}/api/bot/stream-status`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ isLive: live, botSecret: BOT_SECRET })
+    });
+    if (res.ok) {
+      log(`[stream] Updated site stream status: ${live}`);
+    } else {
+      log(`[stream] Failed to update site status: ${res.status}`);
+    }
+  } catch (error) {
+    log(`[stream] Error updating site status: ${error.message}`);
+  }
+}
+
 async function checkStreamLive() {
   try {
-    // Use site API as proxy to check stream status (avoids Cloudflare on kick.com)
-    const res = await fetch(`${R2K2_API_URL}/api/stream/status`);
+    const res = await fetch(`https://api.kick.com/public/v1/channels?slug=${KICK_CHANNEL_SLUG}`, {
+      headers: { 'Authorization': `Bearer ${KICK_ACCESS_TOKEN}` }
+    });
+
+    if (res.status === 401) {
+      await refreshAccessToken();
+      return;
+    }
 
     if (res.ok) {
       const data = await res.json();
+      const channel = data.data?.[0];
       const wasLive = isLive;
-      isLive = data.isLive === true;
-      if (!wasLive && isLive) log(`[stream] Went LIVE — chatter points enabled`);
-      if (wasLive && !isLive) log(`[stream] Went OFFLINE — chatter points disabled`);
+      isLive = channel?.stream?.is_live === true;
+      if (!wasLive && isLive) {
+        log(`[stream] Went LIVE — chatter points enabled`);
+        await updateStreamStatus(true);
+      }
+      if (wasLive && !isLive) {
+        log(`[stream] Went OFFLINE — chatter points disabled`);
+        await updateStreamStatus(false);
+      }
       log(`[stream] isLive: ${isLive}`);
     } else {
-      log(`[stream] Check failed ${res.status} — keeping isLive: ${isLive}`);
+      log(`[stream] Kick API check failed ${res.status} — keeping isLive: ${isLive}`);
     }
   } catch (error) {
     log(`[stream] Error: ${error.message} — keeping isLive: ${isLive}`);
