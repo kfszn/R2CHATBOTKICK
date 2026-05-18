@@ -4,6 +4,7 @@ require('dotenv').config();
 
 // Config
 const KICK_CHANNEL = 'r2ktwo';
+const KICK_CHANNEL_SLUG = 'r2ktwo';
 const BOT_USERNAME = 'CodeR2K2';
 const R2K2_API_URL = process.env.R2K2_API_URL;
 let KICK_ACCESS_TOKEN = process.env.KICK_ACCESS_TOKEN;
@@ -14,55 +15,30 @@ const BOT_SECRET = process.env.BOT_SECRET || '';
 let ws;
 let reconnectDelay = 5000;
 
-// Points config (loaded from API on startup)
-let POINTS_PER_MESSAGE = 1;
-let POINTS_PER_10MIN = 1;
+// Points config
+const POINTS_PER_MESSAGE = 1;
+const POINTS_PER_EMOTE = 0.2;
 
 // Stream state
 let isLive = false;
-let streamCheckInterval = null;
-let watchTimeInterval = null;
-
-// Track chatters this stream session
-const sessionChatters = {};
 
 function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
 }
 
-// ─── API CALLS ───────────────────────────────────────────────────────────────
+// ─── EMOTE DETECTION ─────────────────────────────────────────────────────────
 
-async function loadSettings() {
-  try {
-    const res = await fetch(`${R2K2_API_URL}/api/settings`);
-    if (res.ok) {
-      const data = await res.json();
-      POINTS_PER_MESSAGE = data.pointsPerMessage || data.points_per_message || 1;
-      POINTS_PER_10MIN = data.pointsPer10Min || data.points_per_10min_watch || 1;
-      log(`[settings] Loaded — msg: ${POINTS_PER_MESSAGE}pt, 10min: ${POINTS_PER_10MIN}pt`);
-    }
-  } catch (error) {
-    log(`[settings] Failed to load, using defaults: ${error.message}`);
-  }
+function isEmoteOnly(content) {
+  // Strip all Kick emotes [emote:id:name] and unicode emoji, see if anything remains
+  const stripped = content
+    .replace(/\[emote:\d+:\w+\]/g, '')
+    .replace(/\p{Emoji_Presentation}/gu, '')
+    .replace(/\p{Emoji}\uFE0F/gu, '')
+    .trim();
+  return stripped.length === 0;
 }
 
-async function awardPoints(kickUsername, points, type, description) {
-  try {
-    const res = await fetch(`${R2K2_API_URL}/api/points/award`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ kick_username: kickUsername, points, type, description }),
-    });
-    if (!res.ok) {
-      const err = await res.text();
-      log(`[points] Failed to award ${points}pt to ${kickUsername}: ${err}`);
-    } else {
-      log(`[points] +${points}pt to ${kickUsername} (${type})`);
-    }
-  } catch (error) {
-    log(`[points] Error awarding points to ${kickUsername}: ${error.message}`);
-  }
-}
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
 
 async function refreshAccessToken() {
   try {
@@ -89,6 +65,94 @@ async function refreshAccessToken() {
   }
 }
 
+// ─── STREAM LIVE CHECK ───────────────────────────────────────────────────────
+
+async function checkStreamLive() {
+  try {
+    const res = await fetch(`https://api.kick.com/public/v1/channels?slug=${KICK_CHANNEL_SLUG}`, {
+      headers: { 'Authorization': `Bearer ${KICK_ACCESS_TOKEN}` }
+    });
+
+    if (res.status === 401) {
+      await refreshAccessToken();
+      return;
+    }
+
+    if (res.ok) {
+      const data = await res.json();
+      const channel = data.data?.[0];
+      const wasLive = isLive;
+      isLive = channel?.stream?.is_live === true;
+      if (!wasLive && isLive) log(`[stream] Went LIVE — chatter points enabled`);
+      if (wasLive && !isLive) log(`[stream] Went OFFLINE — chatter points disabled`);
+      log(`[stream] isLive: ${isLive}`);
+    } else {
+      log(`[stream] Check failed ${res.status} — keeping isLive: ${isLive}`);
+    }
+  } catch (error) {
+    log(`[stream] Error: ${error.message} — keeping isLive: ${isLive}`);
+  }
+}
+
+// ─── API CALLS ───────────────────────────────────────────────────────────────
+
+async function loadSettings() {
+  try {
+    const res = await fetch(`${R2K2_API_URL}/api/settings`);
+    if (res.ok) {
+      const data = await res.json();
+      log(`[settings] Loaded — msg: ${POINTS_PER_MESSAGE}pt, emote: ${POINTS_PER_EMOTE}pt`);
+    }
+  } catch (error) {
+    log(`[settings] Failed to load: ${error.message}`);
+  }
+}
+
+async function awardPoints(kickUsername, points, type, description) {
+  try {
+    const res = await fetch(`${R2K2_API_URL}/api/points/award`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kick_username: kickUsername, points, type, description }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      try {
+        const parsed = JSON.parse(err);
+        if (parsed.reason !== 'not_found') {
+          log(`[points] Failed to award ${points}pt to ${kickUsername}: ${err}`);
+        } else {
+          log(`[points] skip ${kickUsername} (no account)`);
+        }
+      } catch {
+        log(`[points] Failed to award ${points}pt to ${kickUsername}: ${err}`);
+      }
+    } else {
+      log(`[points] +${points}pt to ${kickUsername} (${type})`);
+    }
+  } catch (error) {
+    log(`[points] Error awarding points to ${kickUsername}: ${error.message}`);
+  }
+}
+
+async function awardChatterPoints(kickUsername, points, type) {
+  try {
+    const res = await fetch(`${R2K2_API_URL}/api/bot/chatter-points`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kickUsername, points, type, botSecret: BOT_SECRET }),
+    });
+    if (res.ok) {
+      log(`[chatter] +${points}pt to ${kickUsername} (${type})`);
+    } else {
+      const err = await res.text();
+      log(`[chatter] Failed for ${kickUsername}: ${err}`);
+    }
+  } catch (error) {
+    log(`[chatter] Error for ${kickUsername}: ${error.message}`);
+  }
+}
+
 async function sendChatMessage(message) {
   try {
     const res = await fetch('https://api.kick.com/public/v1/chat', {
@@ -106,7 +170,6 @@ async function sendChatMessage(message) {
     if (res.status === 401) {
       log(`[chat] Token expired, refreshing...`);
       await refreshAccessToken();
-      // Retry once after refresh
       const retry = await fetch('https://api.kick.com/public/v1/chat', {
         method: 'POST',
         headers: {
@@ -121,7 +184,7 @@ async function sendChatMessage(message) {
       });
       if (!retry.ok) {
         const err = await retry.text();
-        log(`[chat] Failed to send message after refresh: ${retry.status} ${err}`);
+        log(`[chat] Failed after refresh: ${retry.status} ${err}`);
       }
     } else if (!res.ok) {
       const err = await res.text();
@@ -130,32 +193,6 @@ async function sendChatMessage(message) {
   } catch (error) {
     log(`[chat] Error sending message: ${error.message}`);
   }
-}
-
-// ─── STREAM SESSION ──────────────────────────────────────────────────────────
-
-function onStreamStart() {
-  Object.keys(sessionChatters).forEach(k => delete sessionChatters[k]);
-
-  watchTimeInterval = setInterval(() => {
-    const qualifying = Object.entries(sessionChatters)
-      .filter(([_, data]) => data.messageCount >= 3)
-      .map(([username]) => username);
-
-    log(`[watchtime] Awarding ${POINTS_PER_10MIN}pt to ${qualifying.length} qualifying chatters`);
-
-    for (const username of qualifying) {
-      awardPoints(username, POINTS_PER_10MIN, 'watch_time', 'Watch time bonus (10 min)');
-    }
-  }, 10 * 60 * 1000);
-}
-
-function onStreamEnd() {
-  if (watchTimeInterval) {
-    clearInterval(watchTimeInterval);
-    watchTimeInterval = null;
-  }
-  Object.keys(sessionChatters).forEach(k => delete sessionChatters[k]);
 }
 
 // ─── CHAT HANDLERS ───────────────────────────────────────────────────────────
@@ -189,29 +226,13 @@ async function handleVerify(kickUsername, accountId) {
   }
 }
 
-async function handleChatPoints(kickUsername) {
-  if (!sessionChatters[kickUsername]) {
-    sessionChatters[kickUsername] = { messageCount: 0 };
-  }
-  sessionChatters[kickUsername].messageCount++;
-  log(`[points] ${kickUsername} msg #${sessionChatters[kickUsername].messageCount}`);
-
-  if (POINTS_PER_MESSAGE > 0) {
-    await awardPoints(kickUsername, POINTS_PER_MESSAGE, 'chat_message', 'Chat message');
-  }
-}
-
 async function handleEntry(kickUsername, acebetUsername) {
   log(`[entry] ${kickUsername} entering tournament as ${acebetUsername}`);
   try {
     const res = await fetch(`${R2K2_API_URL}/api/bot/join`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        kickUsername,
-        acebetUsername,
-        botSecret: BOT_SECRET
-      }),
+      body: JSON.stringify({ kickUsername, acebetUsername, botSecret: BOT_SECRET }),
     });
     const data = await res.json();
     const msg = data.message || (res.ok ? '✅ You have been entered into the tournament!' : '❌ Something went wrong. Try again later.');
@@ -229,11 +250,7 @@ async function handleSlotRequest(kickUsername, slotName) {
     const res = await fetch(`${R2K2_API_URL}/api/bot/slot-call`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        kickUsername,
-        slotName,
-        botSecret: BOT_SECRET
-      }),
+      body: JSON.stringify({ kickUsername, slotName, botSecret: BOT_SECRET }),
     });
     const data = await res.json();
     const msg = data.message || (res.ok ? '✅ Your slot call has been added!' : '❌ Something went wrong. Try again later.');
@@ -291,22 +308,32 @@ async function handleMessage(data) {
       return;
     }
 
-    // !entry [acebet_username] command — tournament entry
+    // !entry [acebet_username] command
     const entryMatch = content.match(/^!entry\s+(\S+)$/i);
     if (entryMatch) {
       handleEntry(username, entryMatch[1]);
       return;
     }
 
-    // !request [slot name] command — slot call
+    // !request [slot name] command
     const requestMatch = content.match(/^!request\s+(.+)$/i);
     if (requestMatch) {
       handleSlotRequest(username, requestMatch[1].trim());
       return;
     }
 
-    // Award chat points
-    handleChatPoints(username);
+    // ─── CHATTER POINTS (only when live) ─────────────────────────────────────
+    if (isLive) {
+      const emoteOnly = isEmoteOnly(content);
+      const pts = emoteOnly ? POINTS_PER_EMOTE : POINTS_PER_MESSAGE;
+      const type = emoteOnly ? 'emote' : 'message';
+
+      // Award shop points (linked users only)
+      awardPoints(username, pts, 'chat_message', emoteOnly ? 'Emote message' : 'Chat message');
+
+      // Award chatter leaderboard points (all chatters)
+      awardChatterPoints(username, pts, type);
+    }
 
   } catch (error) {
     log(`[ws] Error parsing message: ${error.message}`);
@@ -367,9 +394,11 @@ async function boot() {
   log(`[boot] Bot secret set: ${!!BOT_SECRET}`);
 
   await loadSettings();
-  log(`[boot] Points per message: ${POINTS_PER_MESSAGE}, Points per 10min: ${POINTS_PER_10MIN}`);
+  await checkStreamLive();
 
-  onStreamStart();
+  // Check stream status every 2 minutes
+  setInterval(checkStreamLive, 2 * 60 * 1000);
+
   connect();
 }
 
