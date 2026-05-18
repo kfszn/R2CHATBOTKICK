@@ -69,20 +69,13 @@ async function refreshAccessToken() {
 
 async function checkStreamLive() {
   try {
-    const res = await fetch(`https://api.kick.com/public/v1/channels?slug=${KICK_CHANNEL_SLUG}`, {
-      headers: { 'Authorization': `Bearer ${KICK_ACCESS_TOKEN}` }
-    });
-
-    if (res.status === 401) {
-      await refreshAccessToken();
-      return;
-    }
+    // Use site API as proxy to check stream status (avoids Cloudflare on kick.com)
+    const res = await fetch(`${R2K2_API_URL}/api/stream/status`);
 
     if (res.ok) {
       const data = await res.json();
-      const channel = data.data?.[0];
       const wasLive = isLive;
-      isLive = channel?.stream?.is_live === true;
+      isLive = data.isLive === true;
       if (!wasLive && isLive) log(`[stream] Went LIVE — chatter points enabled`);
       if (wasLive && !isLive) log(`[stream] Went OFFLINE — chatter points disabled`);
       log(`[stream] isLive: ${isLive}`);
