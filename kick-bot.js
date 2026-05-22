@@ -21,6 +21,8 @@ const POINTS_PER_EMOTE = 0.2;
 
 // Stream state
 let isLive = false;
+let lastStreamCheck = 0;
+const STREAM_CHECK_INTERVAL = 5 * 60 * 1000; // 5 minutes
 
 function log(msg) {
   console.log(`[${new Date().toISOString()}] ${msg}`);
@@ -84,6 +86,13 @@ async function updateStreamStatus(live) {
   }
 }
 
+async function checkStreamLiveIfNeeded() {
+  const now = Date.now();
+  if (now - lastStreamCheck < STREAM_CHECK_INTERVAL) return;
+  lastStreamCheck = now;
+  await checkStreamLive();
+}
+
 async function checkStreamLive() {
   try {
     const res = await fetch(`https://api.kick.com/public/v1/channels?slug=${KICK_CHANNEL_SLUG}`, {
@@ -92,6 +101,21 @@ async function checkStreamLive() {
 
     if (res.status === 401) {
       await refreshAccessToken();
+      // Retry once with fresh token
+      const retry = await fetch(`https://api.kick.com/public/v1/channels?slug=${KICK_CHANNEL_SLUG}`, {
+        headers: { 'Authorization': `Bearer ${KICK_ACCESS_TOKEN}` }
+      });
+      if (retry.ok) {
+        const retryData = await retry.json();
+        const channel = retryData.data?.[0];
+        const wasLive = isLive;
+        isLive = channel?.stream?.is_live === true;
+        if (!wasLive && isLive) { log(`[stream] Went LIVE — chatter points enabled`); await updateStreamStatus(true); }
+        if (wasLive && !isLive) { log(`[stream] Went OFFLINE — chatter points disabled`); await updateStreamStatus(false); }
+        log(`[stream] isLive: ${isLive}`);
+      } else {
+        log(`[stream] Still failing after token refresh: ${retry.status}`);
+      }
       return;
     }
 
@@ -299,6 +323,9 @@ async function handleMessage(data) {
 
     log(`[chat] ${username}: ${content}`);
 
+    // Check stream status on message activity (cached 5 min)
+    checkStreamLiveIfNeeded();
+
     // !verify command
     const verifyMatch = content.match(/^!verify\s+(R2K2-[A-Z0-9]{5})$/i);
     if (verifyMatch) {
@@ -417,11 +444,6 @@ async function boot() {
   log(`[boot] Bot secret set: ${!!BOT_SECRET}`);
 
   await loadSettings();
-  await checkStreamLive();
-
-  // Check stream status every 2 minutes
-  setInterval(checkStreamLive, 2 * 60 * 1000);
-
   connect();
 }
 
