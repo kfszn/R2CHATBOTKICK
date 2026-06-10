@@ -95,46 +95,16 @@ async function checkStreamLiveIfNeeded() {
 
 async function checkStreamLive() {
   try {
-    const res = await fetch(`https://api.kick.com/public/v1/channels?slug=${KICK_CHANNEL_SLUG}`, {
-      headers: { 'Authorization': `Bearer ${KICK_ACCESS_TOKEN}` }
-    });
-
-    if (res.status === 401) {
-      await refreshAccessToken();
-      // Retry once with fresh token
-      const retry = await fetch(`https://api.kick.com/public/v1/channels?slug=${KICK_CHANNEL_SLUG}`, {
-        headers: { 'Authorization': `Bearer ${KICK_ACCESS_TOKEN}` }
-      });
-      if (retry.ok) {
-        const retryData = await retry.json();
-        const channel = retryData.data?.[0];
-        const wasLive = isLive;
-        isLive = channel?.stream?.is_live === true;
-        if (!wasLive && isLive) { log(`[stream] Went LIVE — chatter points enabled`); await updateStreamStatus(true); }
-        if (wasLive && !isLive) { log(`[stream] Went OFFLINE — chatter points disabled`); await updateStreamStatus(false); }
-        log(`[stream] isLive: ${isLive}`);
-      } else {
-        log(`[stream] Still failing after token refresh: ${retry.status}`);
-      }
-      return;
-    }
-
+    const res = await fetch(`${R2K2_API_URL}/api/stream/status`);
     if (res.ok) {
       const data = await res.json();
-      const channel = data.data?.[0];
       const wasLive = isLive;
-      isLive = channel?.stream?.is_live === true;
-      if (!wasLive && isLive) {
-        log(`[stream] Went LIVE — chatter points enabled`);
-        await updateStreamStatus(true);
-      }
-      if (wasLive && !isLive) {
-        log(`[stream] Went OFFLINE — chatter points disabled`);
-        await updateStreamStatus(false);
-      }
+      isLive = data.isLive === true;
+      if (!wasLive && isLive) { log(`[stream] Went LIVE — chatter points enabled`); }
+      if (wasLive && !isLive) { log(`[stream] Went OFFLINE — chatter points disabled`); }
       log(`[stream] isLive: ${isLive}`);
     } else {
-      log(`[stream] Kick API check failed ${res.status} — keeping isLive: ${isLive}`);
+      log(`[stream] Check failed ${res.status} — keeping isLive: ${isLive}`);
     }
   } catch (error) {
     log(`[stream] Error: ${error.message} — keeping isLive: ${isLive}`);
@@ -372,18 +342,16 @@ async function handleMessage(data) {
       return;
     }
 
-    // ─── CHATTER POINTS (only when live) ─────────────────────────────────────
-    if (isLive) {
-      const emoteOnly = isEmoteOnly(content);
-      const pts = emoteOnly ? POINTS_PER_EMOTE : POINTS_PER_MESSAGE;
-      const type = emoteOnly ? 'emote' : 'message';
+    // ─── CHATTER POINTS (always active) ──────────────────────────────────────
+    const emoteOnly = isEmoteOnly(content);
+    const pts = emoteOnly ? POINTS_PER_EMOTE : POINTS_PER_MESSAGE;
+    const type = emoteOnly ? 'emote' : 'message';
 
-      // Award shop points (linked users only)
-      awardPoints(username, pts, 'chat_message', emoteOnly ? 'Emote message' : 'Chat message');
+    // Award shop points (linked users only)
+    awardPoints(username, pts, 'chat_message', emoteOnly ? 'Emote message' : 'Chat message');
 
-      // Award chatter leaderboard points (all chatters)
-      awardChatterPoints(username, pts, type);
-    }
+    // Award chatter leaderboard points (all chatters)
+    awardChatterPoints(username, pts, type);
 
   } catch (error) {
     log(`[ws] Error parsing message: ${error.message}`);
