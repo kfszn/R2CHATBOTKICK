@@ -279,10 +279,64 @@ async function handleSlotRequest(kickUsername, slotName) {
   }
 }
 
+async function handleGTB(kickUsername, guess) {
+  const amount = parseFloat(guess.replace(/[$,]/g, ''));
+  if (isNaN(amount) || amount < 0) {
+    await sendChatMessage(`@${kickUsername} ❌ Invalid guess. Use !gtb [amount] e.g. !gtb 1250 or !gtb 1250.50`);
+    return;
+  }
+  log(`[gtb] ${kickUsername} guessing balance: $${amount}`);
+  try {
+    const res = await fetch(`${R2K2_API_URL}/api/bot/predictions/gtb`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kickUsername, guess: amount, botSecret: BOT_SECRET }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      const isUpdate = data.updated;
+      await sendChatMessage(`@${kickUsername} ${isUpdate ? '🔄 Updated' : '✅ Locked in'} — Balance guess: $${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} 💰`);
+    } else if (res.status === 403) {
+      await sendChatMessage(`@${kickUsername} ❌ Guessing is currently closed!`);
+    } else {
+      await sendChatMessage(`@${kickUsername} ❌ Something went wrong. Try again later.`);
+    }
+  } catch (error) {
+    log(`[gtb] Error for ${kickUsername}: ${error.message}`);
+    await sendChatMessage(`@${kickUsername} ❌ Something went wrong. Try again later.`);
+  }
+}
+
+async function handleGTM(kickUsername, guess) {
+  const multi = parseFloat(guess.replace(/[x,]/gi, ''));
+  if (isNaN(multi) || multi < 0) {
+    await sendChatMessage(`@${kickUsername} ❌ Invalid guess. Use !gtm [multiplier] e.g. !gtm 45.5 or !gtm 100`);
+    return;
+  }
+  log(`[gtm] ${kickUsername} guessing multi: ${multi}x`);
+  try {
+    const res = await fetch(`${R2K2_API_URL}/api/bot/predictions/gtm`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ kickUsername, guess: multi, botSecret: BOT_SECRET }),
+    });
+    const data = await res.json();
+    if (res.ok) {
+      const isUpdate = data.updated;
+      await sendChatMessage(`@${kickUsername} ${isUpdate ? '🔄 Updated' : '✅ Locked in'} — Multi guess: ${multi}x 🎰`);
+    } else if (res.status === 403) {
+      await sendChatMessage(`@${kickUsername} ❌ Guessing is currently closed!`);
+    } else {
+      await sendChatMessage(`@${kickUsername} ❌ Something went wrong. Try again later.`);
+    }
+  } catch (error) {
+    log(`[gtm] Error for ${kickUsername}: ${error.message}`);
+    await sendChatMessage(`@${kickUsername} ❌ Something went wrong. Try again later.`);
+  }
+}
+
 async function handleMessage(data) {
   try {
-    const parsed = JSON.parse(data);
-    if (parsed.event !== 'App\\Events\\ChatMessageEvent') return;
 
     const payload = JSON.parse(parsed.data);
     const username = payload?.sender?.username;
@@ -340,6 +394,38 @@ async function handleMessage(data) {
     if (requestMatch) {
       handleSlotRequest(username, requestMatch[1].trim());
       return;
+    }
+
+    // !gtb [amount] — Guess The Balance
+    const gtbMatch = content.match(/^!gtb\s+([\d.,\$]+)$/i);
+    if (gtbMatch) {
+      handleGTB(username, gtbMatch[1]);
+      return;
+    }
+
+    // !gtm [multi] — Guess The Multi
+    const gtmMatch = content.match(/^!gtm\s+([\d.,x]+)$/i);
+    if (gtmMatch) {
+      handleGTM(username, gtmMatch[1]);
+      return;
+    }
+
+    // ─── SITE GIVEAWAY KEYWORD ────────────────────────────────────────────────
+    // Check if content matches active giveaway keyword (silent entry)
+    try {
+      const res = await fetch(`${R2K2_API_URL}/api/bot/giveaway/enter`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ kickUsername: username, message: content, botSecret: BOT_SECRET }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        if (data.entered) {
+          log(`[giveaway] ${username} entered via keyword`);
+        }
+      }
+    } catch (error) {
+      log(`[giveaway] Error checking keyword for ${username}: ${error.message}`);
     }
 
     // ─── CHATTER POINTS (always active) ──────────────────────────────────────
