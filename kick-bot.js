@@ -19,6 +19,81 @@ let reconnectDelay = 5000;
 const POINTS_PER_MESSAGE = 1;
 const POINTS_PER_EMOTE = 0.2;
 
+// ─── COMMAND & TIMER CACHE ────────────────────────────────────────────────────
+let commandCache = [];
+let timerCache = [];
+let lastCommandFetch = 0;
+const COMMAND_CACHE_TTL = 2 * 60 * 1000; // 2 minutes
+const commandCooldowns = new Map(); // key: `${command}:${username}`, value: timestamp
+const globalCooldowns = new Map(); // key: command, value: last fired timestamp
+
+async function fetchCommands() {
+  try {
+    const res = await fetch(`${R2K2_API_URL}/api/bot/commands`, {
+      headers: { 'x-bot-secret': BOT_SECRET }
+    });
+    if (res.ok) {
+      const data = await res.json();
+      commandCache = data.commands || [];
+      timerCache = data.timers || [];
+      lastCommandFetch = Date.now();
+      log(`[commands] Loaded ${commandCache.length} commands, ${timerCache.length} timers`);
+    }
+  } catch (error) {
+    log(`[commands] Failed to fetch: ${error.message}`);
+  }
+}
+
+async function fetchCommandsIfNeeded() {
+  if (Date.now() - lastCommandFetch > COMMAND_CACHE_TTL) {
+    await fetchCommands();
+  }
+}
+
+async function handleCustomCommand(username, trigger) {
+  await fetchCommandsIfNeeded();
+  const cmd = commandCache.find(c => c.trigger.toLowerCase() === trigger.toLowerCase() && c.enabled);
+  if (!cmd) return false;
+
+  const cooldownMs = (cmd.cooldown_seconds || 0) * 1000;
+  const globalKey = cmd.trigger;
+  const userKey = `${cmd.trigger}:${username}`;
+  const now = Date.now();
+
+  // Check global cooldown
+  if (cooldownMs > 0 && globalCooldowns.has(globalKey)) {
+    if (now - globalCooldowns.get(globalKey) < cooldownMs) {
+      log(`[commands] ${trigger} on cooldown (global)`);
+      return true; // command exists but on cooldown, swallow it
+    }
+  }
+
+  globalCooldowns.set(globalKey, now);
+  await sendChatMessage(cmd.response);
+  log(`[commands] Fired ${trigger} for ${username}`);
+  return true;
+}
+
+// ─── TIMER SYSTEM ─────────────────────────────────────────────────────────────
+const timerLastFired = new Map(); // key: timer id, value: timestamp
+
+async function runTimers() {
+  if (!isLive) return;
+  await fetchCommandsIfNeeded();
+  const now = Date.now();
+  for (const timer of timerCache) {
+    if (!timer.enabled) continue;
+    const intervalMs = (timer.interval_minutes || 10) * 60 * 1000;
+    const lastFired = timerLastFired.get(timer.id) || 0;
+    if (now - lastFired >= intervalMs) {
+      timerLastFired.set(timer.id, now);
+      await sendChatMessage(timer.message);
+      log(`[timer] Fired timer ${timer.id}: ${timer.message.substring(0, 50)}...`);
+    }
+  }
+}
+
+
 // Stream state
 let isLive = false;
 let lastStreamCheck = 0;
@@ -337,6 +412,8 @@ async function handleGTM(kickUsername, guess) {
 
 async function handleMessage(data) {
   try {
+    const parsed = JSON.parse(data);
+    if (parsed.event !== 'App\\Events\\ChatMessageEvent') return;
 
     const payload = JSON.parse(parsed.data);
     const username = payload?.sender?.username;
@@ -408,6 +485,13 @@ async function handleMessage(data) {
     if (gtmMatch) {
       handleGTM(username, gtmMatch[1]);
       return;
+    }
+
+    // ─── CUSTOM COMMANDS ──────────────────────────────────────────────────────
+    if (content.startsWith('!')) {
+      const trigger = content.split(' ')[0].toLowerCase();
+      const handled = await handleCustomCommand(username, trigger);
+      if (handled) return;
     }
 
     // ─── SITE GIVEAWAY KEYWORD ────────────────────────────────────────────────
@@ -498,6 +582,8 @@ async function boot() {
   log(`[boot] Bot secret set: ${!!BOT_SECRET}`);
 
   await loadSettings();
+  await fetchCommands(); // initial load
+  setInterval(runTimers, 60 * 1000); // check timers every minute
   connect();
 }
 
