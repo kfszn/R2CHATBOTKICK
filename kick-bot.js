@@ -559,8 +559,8 @@ function connect() {
     handleMessage(str);
   });
 
-  ws.on('close', () => {
-    log(`[ws] Connection closed. Reconnecting in ${reconnectDelay / 1000}s...`);
+  ws.on('close', (code, reason) => {
+    log(`[ws] Connection closed. Code: ${code} Reason: ${reason?.toString() || 'none'} Reconnecting in ${reconnectDelay / 1000}s...`);
     setTimeout(connect, reconnectDelay);
     reconnectDelay = Math.min(reconnectDelay * 2, 60000);
   });
