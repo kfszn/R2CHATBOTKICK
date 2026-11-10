@@ -106,6 +106,7 @@ async function sendChatMessage(message) {
 const http = require('http');
 
 const server = http.createServer(async (req, res) => {
+  log(`[server] ${req.method} ${req.url}`);
   if (req.method === 'POST' && req.url === '/send') {
     let body = '';
     req.on('data', chunk => body += chunk);
@@ -140,6 +141,13 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
-server.listen(PORT, () => {
+server.listen(PORT, '0.0.0.0', () => {
   log(`[server] Message sender listening on port ${PORT}`);
 });
+
+// Surface crashes instead of dying silently
+process.on('uncaughtException', (err) => log(`[fatal] uncaughtException: ${err.stack || err.message}`));
+process.on('unhandledRejection', (err) => log(`[fatal] unhandledRejection: ${err && err.stack || err}`));
+
+// Heartbeat so the logs show the service is alive
+setInterval(() => log(`[heartbeat] alive, token set: ${!!KICK_ACCESS_TOKEN}`), 5 * 60 * 1000);
